@@ -1,0 +1,8 @@
+{
+  "1": {"name": "Front Door", "type": "door"},
+  "2": {"name": "Back Door", "type": "door"},
+  "3": {"name": "Living Room Window", "type": "window"},
+  "4": {"name": "Kitchen Smoke Detector", "type": "smoke"},
+  "5": {"name": "Hallway Heat Detector", "type": "heat"},
+  "6": {"name": "Garage Motion", "type": "motion"}
+}
