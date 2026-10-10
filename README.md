@@ -1,15 +1,24 @@
 # envisalink_2_postgres.py
 
-Streams DSC alarm panel activity -- door/window/motion zone open/close,
-smoke/heat detector faults, partition arm/disarm state, and panel trouble
-conditions -- into `sensors-backend-fastapi`, via an EnvisaLink EVL3/4
+Streams alarm panel activity -- door/window/motion zone open/close,
+fire/low-battery/AC trouble conditions, and partition ready/armed/alarm
+state -- into `sensors-backend-fastapi`, via an EnvisaLink EVL3/4
 module's local TPI protocol (no cloud account, no vendor SDK).
 
+This panel turned out to speak EnvisaLink's **Ademco/Honeywell Vista**
+TPI variant, not DSC's -- confirmed live (plaintext `Login:` prompt,
+`%CC,DATA$`-style status lines carrying literal keypad display text)
+and cross-checked against the official Ademco TPI spec. ADT historically
+resold rebranded Honeywell/Ademco Vista panels (e.g. "Safewatch Pro"),
+which is almost certainly what's actually installed here despite it
+being sold/thought-of as "a DSC system." See the module docstring in
+`envisalink_2_postgres.py` for the full protocol breakdown.
+
 Unlike the other `sensors-apps/*` scripts, this one runs **continuously**
-as a long-lived process rather than on a timer: EnvisaLink's TPI protocol
-pushes an unsolicited status line the instant something changes, so the
-app maintains one persistent connection and reacts to events as they
-arrive, instead of polling.
+as a long-lived process rather than on a timer: this protocol pushes an
+unsolicited status line the instant something changes, so the app
+maintains one persistent connection and reacts to events as they arrive,
+instead of polling.
 
 A Honeywell Tuxedo Touch panel was also evaluated as an alternative local
 API for this same alarm system -- its local HTTP API was found to expose
@@ -20,10 +29,11 @@ used here.
 ## Requirements
 
 - Python 3.11+ (this fleet's venvs are 3.14)
-- An EnvisaLink EVL3/EVL4 module already paired with the DSC panel, with
-  its own TPI password set (via the EnvisaLink's local web UI)
-- The DSC panel's own keypad access code is **not** needed -- this app
-  only listens, it never arms/disarms/bypasses anything
+- An EnvisaLink EVL3/EVL4 module already paired with the panel, with its
+  own TPI password set (via the EnvisaLink's local web UI -- it's the
+  same password used to log into that web UI)
+- The panel's own keypad access code is **not** needed -- this app only
+  listens, it never arms/disarms/bypasses anything
 
 ## Install
 
@@ -41,10 +51,10 @@ cp partition_map.json.example partition_map.json
 ```
 
 Edit `.env` -- at minimum `ENVISALINK_HOST`, `ENVISALINK_PASSWORD`, and
-`API_BASE_URL`. DSC doesn't expose zone labels or types over the TPI
-protocol, only zone numbers, so `zone_map.json` is how you tell this app
+`API_BASE_URL`. This protocol doesn't expose zone labels or types at
+all, only zone numbers, so `zone_map.json` is how you tell this app
 which zone number is which door/window/smoke detector (and
-`partition_map.json` names your partition(s) -- most residential DSC
+`partition_map.json` names your partition(s) -- most residential
 installs have just one, and the default `{"1": "Main"}` is fine as-is).
 
 ## Usage
@@ -64,20 +74,24 @@ pushing *is* what this script does, continuously, for as long as it runs.
 
 ## What gets logged
 
-Every zone status change POSTs to
+Every zone open/close change POSTs to
 `{API_BASE_URL}/alarm-zones/{zone_number}/log` with
-`{name, zone_type, event}`, where `event` is one of `open`/`restored`,
-`fault`/`fault_restore`, `alarm`/`alarm_restore`, `tamper`/
-`tamper_restore`, or `low_battery`/`low_battery_restore`.
+`{name, zone_type, event}`, where `event` is `open` or `restored`. This
+protocol's zone-state message only distinguishes open/faulted vs.
+restored (no separate fault/tamper/alarm distinction at this layer the
+way DSC's protocol has) -- a dedicated alarm-event code (Realtime CID)
+exists for richer detail but isn't parsed yet.
 
 Every partition status change POSTs to
 `{API_BASE_URL}/alarm-partitions/{partition_number}/log` with
-`{name, status}`, where `status` is one of `ready`/`not_ready`/`armed`/
-`alarm`/`disarmed`/`exit_delay`/`entry_delay`.
+`{name, status}`, where `status` is one of `ready`/`armed_stay`/
+`armed_away`/`alarm` (confirmed values), or `status_<hex>` for any
+status byte not yet confirmed against the spec.
 
-Panel-wide trouble conditions (AC loss, bell trouble, low battery, etc.
--- not tied to a specific zone or partition) POST to
-`{API_BASE_URL}/alarm-trouble/log` with `{condition}`.
+Panel-wide trouble conditions -- derived from the keypad display's
+icon/LED bitfield, not a dedicated trouble message -- POST to
+`{API_BASE_URL}/alarm-trouble/log` with `{condition}`, where `condition`
+is one of `low_battery`, `fire`, `ac_trouble`, or `system_trouble`.
 
 ## Scheduling
 
@@ -100,14 +114,15 @@ safety net if the process itself dies.
 
 ## Troubleshooting
 
-- `expected login prompt (505), got ...` -- wrong `ENVISALINK_PORT`, or
+- `login failed: 'FAILED'` -- wrong `ENVISALINK_PASSWORD` (it's the
+  EnvisaLink web UI's own login password, not any panel/keypad code).
+- `timed out waiting for login response` -- wrong `ENVISALINK_PORT`, or
   something else is already connected to the EnvisaLink's single TPI
   session slot (it only accepts one client at a time).
-- `login failed` -- wrong `ENVISALINK_PASSWORD`.
 - Events never arrive for a zone you know changed -- check
   `zone_map.json` has the right zone number, and check with `--verbose`
-  for the raw `<- 609 ...`-style line to confirm what number the panel
-  is actually reporting.
+  for the raw `<- 01 ...`-style line (zone-state messages) to confirm
+  what's actually being reported.
 
 ## Files
 
